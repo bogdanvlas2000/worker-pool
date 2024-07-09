@@ -3,13 +3,14 @@ package worker_pool
 import "testing"
 
 func TestWorkerPool(t *testing.T) {
-	tasks := []Task{
-		{ID: 0},
-		{ID: 1},
-		{ID: 2},
-		{ID: 3},
+	tasks := []Task{}
+
+	for i := 0; i < 20; i++ {
+		tasks = append(tasks, Task{
+			ID: i,
+		})
 	}
 
-	pool := NewWorkerPool(tasks, 4)
+	pool := NewWorkerPool(tasks, 50)
 	pool.Start()
 }

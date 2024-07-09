@@ -29,12 +29,13 @@ type WorkerPool struct {
 	resultQueue         chan Result
 	remainingTasksCount chan int
 
-	workersCount int
+	maxWorkersCount int
+	workers         []*Worker
 
 	logger logr.Logger
 }
 
-func NewWorkerPool(tasks []Task, workersCount int) *WorkerPool {
+func NewWorkerPool(tasks []Task, maxWorkersCount int) *WorkerPool {
 	opts := &zap.Options{
 		Development: true,
 		TimeEncoder: zapcore.TimeEncoderOfLayout(time.RFC3339Nano),
@@ -42,26 +43,53 @@ func NewWorkerPool(tasks []Task, workersCount int) *WorkerPool {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	logger := zap.New(zap.UseFlagOptions(opts))
+	logger := zap.New(zap.UseFlagOptions(opts)).WithName("pool")
 
 	return &WorkerPool{
 		wg:                  &sync.WaitGroup{},
 		tasks:               tasks,
 		resultQueue:         make(chan Result),
 		remainingTasksCount: make(chan int),
-		workersCount:        workersCount,
+		maxWorkersCount:     maxWorkersCount,
 		logger:              logger,
 	}
 }
 
 func (p *WorkerPool) Start() {
+	p.initWorkers()
 
-	p.taskQueue, p.done = p.streamTasks(p.tasks)
+	defer p.timer()()
+	p.taskQueue, p.done = p.dispatchTasks(p.tasks)
 
-	p.runWorkers(p.workersCount)
+	p.runWorkers(p.maxWorkersCount)
 
 	p.collectResults()
 	p.wg.Wait()
+}
+
+func (p *WorkerPool) initWorkers() {
+	p.workers = []*Worker{}
+
+	var count int
+	if len(p.tasks) < p.maxWorkersCount {
+		count = len(p.tasks)
+	} else {
+		count = p.maxWorkersCount
+	}
+
+	for i := 0; i < count; i++ {
+		worker := &Worker{
+			ID:             i,
+			logger:         p.logger.WithName(fmt.Sprintf("worker-%d", i)),
+			taskQueue:      p.taskQueue,
+			resultQueue:    p.resultQueue,
+			done:           p.done,
+			remainingTasks: p.remainingTasksCount,
+			wg:             p.wg,
+		}
+		p.workers = append(p.workers, worker)
+	}
+	p.logger.Info("init workers", "count", count)
 }
 
 func (p *WorkerPool) timer() func() {
@@ -71,7 +99,7 @@ func (p *WorkerPool) timer() func() {
 	}
 }
 
-func (p *WorkerPool) streamTasks(tasks []Task) (chan Task, chan bool) {
+func (p *WorkerPool) dispatchTasks(tasks []Task) (chan Task, chan bool) {
 	p.wg.Add(1)
 
 	logger := p.logger.WithName("sender")
