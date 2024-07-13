@@ -20,9 +20,10 @@ type WorkerPool struct {
 	tasks []Task
 
 	taskQueue chan Task
-	done      chan bool
+	//done      chan bool
 
 	resultQueue chan Result
+	stopCh      chan struct{}
 
 	maxWorkersCount int
 	workers         []*Worker
@@ -38,13 +39,14 @@ func NewWorkerPool(tasks []Task, maxWorkersCount int, logger logr.Logger) (*Work
 		resultQueue:     make(chan Result),
 		maxWorkersCount: maxWorkersCount,
 		logger:          logger,
+		stopCh:          make(chan struct{}),
 	}, nil
 }
 
 func (p *WorkerPool) Start() {
 	p.initWorkers()
 
-	p.taskQueue, p.done = p.dispatchTasks(p.tasks)
+	p.taskQueue = p.dispatchTasks(p.tasks)
 
 	p.runWorkers(p.maxWorkersCount)
 
@@ -68,7 +70,6 @@ func (p *WorkerPool) initWorkers() {
 			logger:      p.logger.WithName(fmt.Sprintf("worker-%d", i)),
 			taskQueue:   p.taskQueue,
 			resultQueue: p.resultQueue,
-			done:        p.done,
 			wg:          p.wg,
 		}
 		p.workers = append(p.workers, worker)
@@ -76,15 +77,15 @@ func (p *WorkerPool) initWorkers() {
 	p.logger.Info("init workers", "count", count)
 }
 
-func (p *WorkerPool) dispatchTasks(tasks []Task) (chan Task, chan bool) {
+func (p *WorkerPool) dispatchTasks(tasks []Task) chan Task {
 	p.wg.Add(1)
 
 	logger := p.logger.WithName("sender")
 	taskQueue := make(chan Task, len(tasks))
-	done := make(chan bool)
 
 	go func() {
 		defer p.wg.Done()
+		defer close(taskQueue)
 
 		for _, task := range tasks {
 			logger.Info("send task", "ID", task.ID)
@@ -92,16 +93,11 @@ func (p *WorkerPool) dispatchTasks(tasks []Task) (chan Task, chan bool) {
 		}
 
 		logger.Info("waiting until all tasks are done")
-		_, isNotClosed := <-done
-
-		if !isNotClosed {
-			logger.Info("all tasks are done")
-			close(taskQueue)
-			logger.Info("closed taskQueue")
-		}
+		<-p.stopCh
+		logger.Info("stop")
 	}()
 
-	return taskQueue, done
+	return taskQueue
 }
 
 func (p *WorkerPool) runWorkers(n int) {
@@ -112,7 +108,6 @@ func (p *WorkerPool) runWorkers(n int) {
 			ID:          i,
 			taskQueue:   p.taskQueue,
 			resultQueue: p.resultQueue,
-			done:        p.done,
 			wg:          p.wg,
 		}
 		worker.Start()
@@ -123,15 +118,25 @@ func (p *WorkerPool) collectResults() {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
-		defer close(p.done)
+		defer close(p.stopCh)
 
 		var results []Result
 
 		logger := p.logger.WithName("receiver")
+
+		logger.Info("start")
+
 		for {
 			logger.Info("attempting to receive result")
-			result := <-p.resultQueue
-			logger.Info("received result", "value", result.Value)
+
+			var result Result
+			select {
+			case result = <-p.resultQueue:
+				logger.Info("received result", "value", result.Value)
+			case <-p.stopCh:
+				logger.Info("stop signal received")
+				break
+			}
 
 			results = append(results, result)
 
@@ -142,6 +147,6 @@ func (p *WorkerPool) collectResults() {
 				break
 			}
 		}
-		logger.Info("close done chan")
+		logger.Info("stop")
 	}()
 }

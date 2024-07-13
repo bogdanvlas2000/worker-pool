@@ -40,7 +40,7 @@ func TestWorkerPool(t *testing.T) {
 	for i, test := range tests {
 		tasks := []Task{}
 
-		for i := 0; i < test.taskCount; i++ {
+		for i := 1; i <= test.taskCount; i++ {
 			tasks = append(tasks, Task{
 				ID: i,
 			})
