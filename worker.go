@@ -13,8 +13,7 @@ type Worker struct {
 	taskQueue   <-chan Task
 	resultQueue chan Result
 
-	remainingTasks chan int
-	done           chan bool
+	done chan bool
 
 	wg *sync.WaitGroup
 }
@@ -42,18 +41,8 @@ func (w *Worker) Start() {
 
 			w.logger.Info("sends result", "taskId", task.ID, "resultValue", result.Value)
 			w.resultQueue <- result
-
-			w.logger.Info("attempting to check remaining tasks")
-			remained := <-w.remainingTasks
-			w.logger.Info("remaining tasks", "count", remained)
-
-			if remained == 0 {
-				w.logger.Info("all tasks are done")
-				w.done <- true
-				close(w.done)
-				break
-			}
 		}
-		w.logger.Info("stop", "id", w.ID)
+
+		w.logger.Info("stop")
 	}()
 }

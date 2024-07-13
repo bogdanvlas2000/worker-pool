@@ -1,13 +1,9 @@
 package worker_pool
 
 import (
-	"flag"
 	"fmt"
 	"github.com/go-logr/logr"
-	"go.uber.org/zap/zapcore"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sync"
-	"time"
 )
 
 type Task struct {
@@ -26,8 +22,7 @@ type WorkerPool struct {
 	taskQueue chan Task
 	done      chan bool
 
-	resultQueue         chan Result
-	remainingTasksCount chan int
+	resultQueue chan Result
 
 	maxWorkersCount int
 	workers         []*Worker
@@ -35,30 +30,20 @@ type WorkerPool struct {
 	logger logr.Logger
 }
 
-func NewWorkerPool(tasks []Task, maxWorkersCount int) *WorkerPool {
-	opts := &zap.Options{
-		Development: true,
-		TimeEncoder: zapcore.TimeEncoderOfLayout(time.RFC3339Nano),
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-
-	logger := zap.New(zap.UseFlagOptions(opts)).WithName("pool")
-
+func NewWorkerPool(tasks []Task, maxWorkersCount int, logger logr.Logger) (*WorkerPool, error) {
+	logger.Info("init worker pool", "tasksCount", len(tasks), "maxWorkersCount", maxWorkersCount)
 	return &WorkerPool{
-		wg:                  &sync.WaitGroup{},
-		tasks:               tasks,
-		resultQueue:         make(chan Result),
-		remainingTasksCount: make(chan int),
-		maxWorkersCount:     maxWorkersCount,
-		logger:              logger,
-	}
+		wg:              &sync.WaitGroup{},
+		tasks:           tasks,
+		resultQueue:     make(chan Result),
+		maxWorkersCount: maxWorkersCount,
+		logger:          logger,
+	}, nil
 }
 
 func (p *WorkerPool) Start() {
 	p.initWorkers()
 
-	defer p.timer()()
 	p.taskQueue, p.done = p.dispatchTasks(p.tasks)
 
 	p.runWorkers(p.maxWorkersCount)
@@ -79,24 +64,16 @@ func (p *WorkerPool) initWorkers() {
 
 	for i := 0; i < count; i++ {
 		worker := &Worker{
-			ID:             i,
-			logger:         p.logger.WithName(fmt.Sprintf("worker-%d", i)),
-			taskQueue:      p.taskQueue,
-			resultQueue:    p.resultQueue,
-			done:           p.done,
-			remainingTasks: p.remainingTasksCount,
-			wg:             p.wg,
+			ID:          i,
+			logger:      p.logger.WithName(fmt.Sprintf("worker-%d", i)),
+			taskQueue:   p.taskQueue,
+			resultQueue: p.resultQueue,
+			done:        p.done,
+			wg:          p.wg,
 		}
 		p.workers = append(p.workers, worker)
 	}
 	p.logger.Info("init workers", "count", count)
-}
-
-func (p *WorkerPool) timer() func() {
-	start := time.Now()
-	return func() {
-		p.logger.WithName("timer").Info("completed", "time", time.Since(start))
-	}
 }
 
 func (p *WorkerPool) dispatchTasks(tasks []Task) (chan Task, chan bool) {
@@ -115,7 +92,9 @@ func (p *WorkerPool) dispatchTasks(tasks []Task) (chan Task, chan bool) {
 		}
 
 		logger.Info("waiting until all tasks are done")
-		if <-done {
+		_, isNotClosed := <-done
+
+		if !isNotClosed {
 			logger.Info("all tasks are done")
 			close(taskQueue)
 			logger.Info("closed taskQueue")
@@ -129,13 +108,12 @@ func (p *WorkerPool) runWorkers(n int) {
 	for i := 0; i < n; i++ {
 		p.wg.Add(1)
 		worker := Worker{
-			logger:         p.logger.WithName(fmt.Sprintf("worker-%d", i)),
-			ID:             i,
-			taskQueue:      p.taskQueue,
-			resultQueue:    p.resultQueue,
-			done:           p.done,
-			remainingTasks: p.remainingTasksCount,
-			wg:             p.wg,
+			logger:      p.logger.WithName(fmt.Sprintf("worker-%d", i)),
+			ID:          i,
+			taskQueue:   p.taskQueue,
+			resultQueue: p.resultQueue,
+			done:        p.done,
+			wg:          p.wg,
 		}
 		worker.Start()
 	}
@@ -145,6 +123,8 @@ func (p *WorkerPool) collectResults() {
 	p.wg.Add(1)
 	go func() {
 		defer p.wg.Done()
+		defer close(p.done)
+
 		var results []Result
 
 		logger := p.logger.WithName("receiver")
@@ -157,13 +137,11 @@ func (p *WorkerPool) collectResults() {
 
 			remained := len(p.tasks) - len(results)
 
-			logger.Info("remained tasks", "count", remained)
-			p.remainingTasksCount <- remained
-
 			if remained == 0 {
 				logger.Info("all results received", "results", results)
 				break
 			}
 		}
+		logger.Info("close done chan")
 	}()
 }
