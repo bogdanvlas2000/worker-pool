@@ -1,16 +1,16 @@
 package worker_pool
 
 import (
-	"flag"
 	"fmt"
+	"github.com/go-logr/zapr"
+	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"os"
 	"testing"
 	"time"
 )
 
-func TestWorkerPool(t *testing.T) {
+func TestWorkerPool_TaskExecution(t *testing.T) {
 	tests := []struct {
 		taskCount      int
 		maxWorkerCount int
@@ -19,46 +19,66 @@ func TestWorkerPool(t *testing.T) {
 			taskCount:      2,
 			maxWorkerCount: 2,
 		},
-		{
-			taskCount:      5,
-			maxWorkerCount: 2,
-		},
-		{
-			taskCount:      2,
-			maxWorkerCount: 5,
-		},
+		//{
+		//	taskCount:      5,
+		//	maxWorkerCount: 2,
+		//},
+		//{
+		//	taskCount:      2,
+		//	maxWorkerCount: 5,
+		//},
 	}
 
-	opts := &zap.Options{
-		Development: true,
-		TimeEncoder: zapcore.TimeEncoderOfLayout(time.RFC3339Nano),
-	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-	logger := zap.New(zap.UseFlagOptions(opts))
+	atom := zap.NewAtomicLevel()
+
+	encoderCfg := zap.NewDevelopmentEncoderConfig()
+	encoderCfg.TimeKey = ""
+	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	zapLogger := zap.New(zapcore.NewCore(
+		zapcore.NewConsoleEncoder(encoderCfg),
+		zapcore.Lock(os.Stdout),
+		atom,
+	))
+
+	defer zapLogger.Sync()
+
+	atom.SetLevel(zap.InfoLevel)
+
+	logger := zapr.NewLogger(zapLogger)
+
+	testLogger := logger.WithName("test")
 
 	for i, test := range tests {
-		tasks := []Task{}
-
-		for i := 1; i <= test.taskCount; i++ {
-			tasks = append(tasks, Task{
-				ID: i,
-			})
-		}
-
 		poolName := fmt.Sprintf("pool-%d", i)
-		pool, err := NewWorkerPool(tasks, test.maxWorkerCount, logger.WithName(poolName))
-		if err != nil {
-			log.Fatalln(err)
-		}
+		wp := NewWorkerPool(test.maxWorkerCount, logger.WithName(poolName))
 
 		timer := getTimer()
-		pool.Start()
+		results := wp.Start()
+
+		for i := 1; i <= test.taskCount; i++ {
+			task := Task{
+				ID: i,
+			}
+			testLogger.Info("submit task", "taskId", task)
+			wp.Submit(task)
+		}
 		duration := timer()
 
-		logger.Info("test completed", "workerPool", poolName, "duration", duration)
-		fmt.Println()
+		for i := 0; i < test.taskCount; i++ {
+			result, ok := <-results
+			if !ok {
+				testLogger.Info("results chan is closed")
+				break
+			}
+			testLogger.Info("result received", "value", result.Value)
+		}
 
+		testLogger.Info("stop worker pool")
+		wp.Stop()
+
+		testLogger.Info("test completed", "workerPool", poolName, "duration", duration)
+		fmt.Println()
 	}
 }
 

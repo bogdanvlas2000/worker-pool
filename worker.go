@@ -7,18 +7,19 @@ import (
 	"time"
 )
 
-type Worker struct {
-	logger      logr.Logger
-	ID          int
-	taskQueue   <-chan Task
-	resultQueue chan Result
+type worker struct {
+	ID     int
+	logger logr.Logger
 
-	stopCh chan struct{}
+	tasksToExecute <-chan Task
+	resultQueue    chan Result
+
+	stopSignal chan struct{}
 
 	wg *sync.WaitGroup
 }
 
-func (w *Worker) Start() {
+func (w *worker) start() {
 	go func() {
 		defer w.wg.Done()
 		w.logger.Info("start")
@@ -30,13 +31,13 @@ func (w *Worker) Start() {
 
 			w.logger.Info("attempting to receive task")
 			select {
-			case task, ok = <-w.taskQueue:
+			case task, ok = <-w.tasksToExecute:
 				if !ok {
 					w.logger.Info("task queue is closed")
 					break Loop
 				}
 				w.logger.Info("received task", "taskId", task.ID)
-			case <-w.stopCh:
+			case <-w.stopSignal:
 				w.logger.Info("stop signal received")
 				break
 			}
@@ -53,7 +54,7 @@ func (w *Worker) Start() {
 			select {
 			case w.resultQueue <- result:
 				w.logger.Info("result sent", "taskId", task.ID, "resultValue", result.Value)
-			case <-w.stopCh:
+			case <-w.stopSignal:
 				w.logger.Info("stop signal received")
 				break
 			}
