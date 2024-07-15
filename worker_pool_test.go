@@ -10,6 +10,20 @@ import (
 	"time"
 )
 
+type testTask struct {
+	id    int
+	delay time.Duration
+}
+
+func (t testTask) String() string {
+	return fmt.Sprintf("task-%d", t.id)
+}
+
+func (t testTask) Execute() string {
+	time.Sleep(t.delay)
+	return fmt.Sprintf("result of task-%d", t.id)
+}
+
 func TestWorkerPool_TaskExecution(t *testing.T) {
 	tests := []struct {
 		taskCount      int
@@ -52,14 +66,15 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 
 	for i, test := range tests {
 		poolName := fmt.Sprintf("pool-%d", i)
-		wp := NewWorkerPool(test.maxWorkerCount, logger.WithName(poolName))
+		wp := NewWorkerPool[string](test.maxWorkerCount, logger.WithName(poolName))
 
 		timer := getTimer()
 		results := wp.Start()
 
 		for i := 1; i <= test.taskCount; i++ {
-			task := Task{
-				ID: i,
+			task := testTask{
+				id:    i,
+				delay: time.Second,
 			}
 			testLogger.Info("submit task", "taskId", task)
 			wp.Submit(task)
@@ -72,7 +87,7 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 				testLogger.Info("results chan is closed")
 				break
 			}
-			testLogger.Info("result received", "value", result.Value)
+			testLogger.Info("result received", "result", result)
 		}
 
 		testLogger.Info("stop worker pool")

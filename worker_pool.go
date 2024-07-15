@@ -5,25 +5,21 @@ import (
 	stack "github.com/bogdanvlas2000/collections/stack"
 	"github.com/go-logr/logr"
 	"sync"
-	"time"
 )
 
-type Task struct {
-	ID int
+type Task[T any] interface {
+	Execute() T
+	String() string
 }
 
-type Result struct {
-	Value string
-}
-
-type WorkerPool struct {
+type WorkerPool[T any] struct {
 	wg *sync.WaitGroup
 
-	inputTasks     chan Task
-	tasksToExecute chan Task
-	resultQueue    chan Result
+	inputTasks     chan Task[T]
+	tasksToExecute chan Task[T]
+	resultQueue    chan T
 
-	waitingTasks stack.Stack[Task]
+	waitingTasks stack.Stack[Task[T]]
 
 	maxWorkerCount int
 
@@ -32,38 +28,36 @@ type WorkerPool struct {
 	logger logr.Logger
 }
 
-func NewWorkerPool(maxWorkersCount int, logger logr.Logger) *WorkerPool {
+func NewWorkerPool[T any](maxWorkersCount int, logger logr.Logger) *WorkerPool[T] {
 	if maxWorkersCount < 1 {
 		maxWorkersCount = 1
 	}
 
 	logger.Info("create worker pool", "maxWorkerCount", maxWorkersCount)
 
-	pool := WorkerPool{
+	return &WorkerPool[T]{
 		maxWorkerCount: maxWorkersCount,
 		logger:         logger,
 		wg:             &sync.WaitGroup{},
-		inputTasks:     make(chan Task, 1),
-		tasksToExecute: make(chan Task),
-		resultQueue:    make(chan Result),
+		inputTasks:     make(chan Task[T]),
+		tasksToExecute: make(chan Task[T]),
+		resultQueue:    make(chan T),
 		stopSignal:     make(chan struct{}),
 	}
-
-	return &pool
 }
 
-func (p *WorkerPool) Start() <-chan Result {
+func (p *WorkerPool[T]) Start() <-chan T {
 	p.dispatch()
 	return p.resultQueue
 }
 
-func (p *WorkerPool) Submit(task Task) {
+func (p *WorkerPool[T]) Submit(task Task[T]) {
 	logger := p.logger.WithName("submit")
-	logger.Info("send task to inputTasks", "taskId", task.ID)
+	logger.Info("send task to inputTasks", "task", task.String())
 	p.inputTasks <- task
 }
 
-func (p *WorkerPool) processWaitingTasks() (ok bool) {
+func (p *WorkerPool[T]) processWaitingTasks() (ok bool) {
 	logger := p.logger.WithName("processWaitingTasks")
 
 	waitingTask, ok := p.waitingTasks.Peek()
@@ -73,7 +67,7 @@ func (p *WorkerPool) processWaitingTasks() (ok bool) {
 		return true
 	}
 
-	var inputTask Task
+	var inputTask Task[T]
 
 	select {
 	case inputTask, ok = <-p.inputTasks:
@@ -81,10 +75,10 @@ func (p *WorkerPool) processWaitingTasks() (ok bool) {
 			logger.Info("inputTasks closed")
 			return false
 		}
-		logger.Info("push input task to waitingTasks", "taskId", inputTask.ID)
+		logger.Info("push input task to waitingTasks", "task", inputTask.String())
 		p.waitingTasks.Push(inputTask)
 	case p.tasksToExecute <- waitingTask:
-		logger.Info("sent waiting task to tasksToExecute", "taskId", waitingTask)
+		logger.Info("sent waiting task to tasksToExecute", "task", waitingTask.String())
 		p.waitingTasks.Pop()
 	}
 
@@ -92,7 +86,7 @@ func (p *WorkerPool) processWaitingTasks() (ok bool) {
 }
 
 // dispatch sends a submitted Task to a worker
-func (p *WorkerPool) dispatch() {
+func (p *WorkerPool[T]) dispatch() {
 	p.wg.Add(1)
 
 	logger := p.logger.WithName("dispatch")
@@ -112,7 +106,7 @@ func (p *WorkerPool) dispatch() {
 				continue
 			}
 
-			var inputTask Task
+			var inputTask Task[T]
 			var ok bool
 
 			logger.Info("attempting to receive input task...")
@@ -134,20 +128,20 @@ func (p *WorkerPool) dispatch() {
 				break Loop
 			}
 
-			logger.Info("input task received", "taskId", inputTask.ID)
+			logger.Info("input task received", "task", inputTask.String())
 
 			// if workerCount < maxWorkerCount init a new worker
 			if workersCount < p.maxWorkerCount {
 				logger.Info("workers limit not reached yet", "workersCount", workersCount)
 
-				p.initNewWorker(workersCount)
+				p.worker(workersCount)
 				workersCount++
 
-				logger.Info("attempting to send task to tasksToExecute...", "taskId", inputTask.ID)
+				logger.Info("attempting to send task to tasksToExecute...", "task", inputTask.String())
 				p.tasksToExecute <- inputTask
 			} else {
 				logger.Info("workers limit reached", "workersCount", workersCount)
-				logger.Info("push input task to waitingTasks", "taskId", inputTask.ID)
+				logger.Info("push input task to waitingTasks", "task", inputTask.String())
 				p.waitingTasks.Push(inputTask)
 			}
 		}
@@ -155,7 +149,7 @@ func (p *WorkerPool) dispatch() {
 	}()
 }
 
-func (p *WorkerPool) initNewWorker(id int) {
+func (p *WorkerPool[T]) worker(id int) {
 	p.wg.Add(1)
 	logger := p.logger.WithName(fmt.Sprintf("worker-%d", id))
 
@@ -166,7 +160,7 @@ func (p *WorkerPool) initNewWorker(id int) {
 
 	Loop:
 		for {
-			var task Task
+			var task Task[T]
 			var ok bool
 
 			logger.Info("attempting to receive task")
@@ -176,24 +170,20 @@ func (p *WorkerPool) initNewWorker(id int) {
 					logger.Info("task queue is closed")
 					break Loop
 				}
-				logger.Info("received task", "taskId", task.ID)
+				logger.Info("received task", "task", task.String())
 			case <-p.stopSignal:
 				logger.Info("stop signal received")
 				break Loop
 			}
 
-			logger.Info("executing task...", "taskId", task.ID)
-			time.Sleep(time.Second)
-			logger.Info("completed task", "taskId", task.ID)
+			logger.Info("executing task...", "task", task.String())
+			result := task.Execute()
+			logger.Info("completed task", "task", task.String())
 
-			result := Result{
-				Value: fmt.Sprintf("result of task %d", task.ID),
-			}
-
-			logger.Info("attempting to send result", "taskId", task.ID, "resultValue", result.Value)
+			logger.Info("attempting to send result", "task", task.String(), "result", result)
 			select {
 			case p.resultQueue <- result:
-				logger.Info("result sent", "taskId", task.ID, "resultValue", result.Value)
+				logger.Info("result sent", "task", task.String(), "result", result)
 			case <-p.stopSignal:
 				logger.Info("stop signal received")
 				break
@@ -204,13 +194,12 @@ func (p *WorkerPool) initNewWorker(id int) {
 	}()
 }
 
-func (p *WorkerPool) Stop() {
+func (p *WorkerPool[T]) Stop() {
 	logger := p.logger.WithName("Stop")
 
 	close(p.stopSignal)
 
 	logger.Info("wait for all goroutines to close...")
-	//TODO: use wg.Add() and wg.Done() in goroutines
 	p.wg.Wait()
 	logger.Info("all goroutines were closed")
 }
