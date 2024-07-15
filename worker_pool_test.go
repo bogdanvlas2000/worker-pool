@@ -16,8 +16,9 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 		maxWorkerCount int
 	}{
 		{
-			taskCount:      2,
-			maxWorkerCount: 2,
+			//TODO: livelock with this test input (3, 1)
+			taskCount:      10,
+			maxWorkerCount: 3,
 		},
 		//{
 		//	taskCount:      5,
@@ -63,9 +64,9 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 			testLogger.Info("submit task", "taskId", task)
 			wp.Submit(task)
 		}
-		duration := timer()
 
 		for i := 0; i < test.taskCount; i++ {
+			testLogger.Info("attempting to receive result...")
 			result, ok := <-results
 			if !ok {
 				testLogger.Info("results chan is closed")
@@ -76,6 +77,7 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 
 		testLogger.Info("stop worker pool")
 		wp.Stop()
+		duration := timer()
 
 		testLogger.Info("test completed", "workerPool", poolName, "duration", duration)
 		fmt.Println()

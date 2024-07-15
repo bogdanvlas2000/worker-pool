@@ -22,6 +22,7 @@ type worker struct {
 func (w *worker) start() {
 	go func() {
 		defer w.wg.Done()
+
 		w.logger.Info("start")
 
 	Loop:
@@ -39,7 +40,7 @@ func (w *worker) start() {
 				w.logger.Info("received task", "taskId", task.ID)
 			case <-w.stopSignal:
 				w.logger.Info("stop signal received")
-				break
+				break Loop
 			}
 
 			w.logger.Info("executing task...", "taskId", task.ID)

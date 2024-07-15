@@ -2,6 +2,7 @@ package worker_pool
 
 import (
 	"fmt"
+	stack "github.com/bogdanvlas2000/collections/stack"
 	"github.com/go-logr/logr"
 	"sync"
 )
@@ -19,13 +20,13 @@ type WorkerPool struct {
 
 	inputTasks     chan Task
 	tasksToExecute chan Task
+	resultQueue    chan Result
 
-	resultQueue chan Result
+	waitingTasks   stack.Stack[Task]
+	maxWorkerCount int
+	workers        []*worker
 
 	stopSignal chan struct{}
-
-	workers        []*worker
-	maxWorkerCount int
 
 	logger logr.Logger
 }
@@ -41,7 +42,7 @@ func NewWorkerPool(maxWorkersCount int, logger logr.Logger) *WorkerPool {
 		maxWorkerCount: maxWorkersCount,
 		logger:         logger,
 		wg:             &sync.WaitGroup{},
-		inputTasks:     make(chan Task),
+		inputTasks:     make(chan Task, 1),
 		tasksToExecute: make(chan Task),
 		resultQueue:    make(chan Result),
 		stopSignal:     make(chan struct{}),
@@ -61,21 +62,59 @@ func (p *WorkerPool) Submit(task Task) {
 	p.inputTasks <- task
 }
 
-// dispatch assigns a submitted Task to a worker
+func (p *WorkerPool) processWaitingTasks() (ok bool) {
+	logger := p.logger.WithName("processWaitingTasks")
+
+	waitingTask, ok := p.waitingTasks.Peek()
+
+	if !ok {
+		logger.Info("waitingTasks is empty")
+		return true
+	}
+
+	var inputTask Task
+
+	select {
+	case inputTask, ok = <-p.inputTasks:
+		if !ok {
+			logger.Info("inputTasks closed")
+			return false
+		}
+		logger.Info("push input task to waitingTasks", "taskId", inputTask.ID)
+		p.waitingTasks.Push(inputTask)
+	case p.tasksToExecute <- waitingTask:
+		logger.Info("sent waiting task to tasksToExecute", "taskId", waitingTask)
+		p.waitingTasks.Pop()
+	}
+
+	return true
+}
+
+// dispatch sends a submitted Task to a worker
 func (p *WorkerPool) dispatch() {
+	p.wg.Add(1)
+
 	logger := p.logger.WithName("dispatch")
 
 	go func() {
 		//var workerCount int
+		defer p.wg.Done()
 
 	Loop:
 		for {
-			var task Task
+			if p.waitingTasks.Size() > 0 {
+				if !p.processWaitingTasks() {
+					break Loop
+				}
+				continue
+			}
+
+			var inputTask Task
 			var ok bool
 
 			logger.Info("attempting to receive input task...")
 			select {
-			case task, ok = <-p.inputTasks:
+			case inputTask, ok = <-p.inputTasks:
 				// double-check stopSignal
 				select {
 				case <-p.stopSignal:
@@ -84,7 +123,7 @@ func (p *WorkerPool) dispatch() {
 				default:
 				}
 				if !ok {
-					logger.Info("inputTasks is closed")
+					logger.Info("inputTasks chan is closed")
 					break Loop
 				}
 			case <-p.stopSignal:
@@ -92,37 +131,51 @@ func (p *WorkerPool) dispatch() {
 				break Loop
 			}
 
-			logger.Info("input task received", "taskId", task.ID)
+			logger.Info("input task received", "taskId", inputTask.ID)
 
 			// if workerCount < maxWorkerCount init a new worker
-			if len(p.workers) < p.maxWorkerCount {
-				workerName := fmt.Sprintf("worker-%d", len(p.workers))
-				w := &worker{
-					ID:             len(p.workers),
-					logger:         p.logger.WithName(workerName),
-					tasksToExecute: p.tasksToExecute,
-					resultQueue:    p.resultQueue,
-				}
-				// add worker
-				p.workers = append(p.workers, w)
-				logger.Info("created new worker", "name", workerName)
-				// start worker
-				w.start()
-			}
+			workersCount := len(p.workers)
+			if workersCount < p.maxWorkerCount {
+				logger.Info("workers limit not reached yet", "workersCount", workersCount)
 
-			logger.Info("attempting to send task to tasksToExecute...")
-			p.tasksToExecute <- task
+				p.initNewWorker(workersCount)
+
+				logger.Info("attempting to send task to tasksToExecute...", "taskId", inputTask.ID)
+				p.tasksToExecute <- inputTask
+			} else {
+				logger.Info("workers limit reached", "workersCount", workersCount)
+				logger.Info("push input task to waitingTasks", "taskId", inputTask.ID)
+				p.waitingTasks.Push(inputTask)
+			}
 		}
+		logger.Info("stop")
 	}()
+}
+
+func (p *WorkerPool) initNewWorker(id int) {
+	defer p.wg.Add(1)
+
+	w := &worker{
+		ID:             len(p.workers),
+		logger:         p.logger.WithName(fmt.Sprintf("worker-%d", len(p.workers))),
+		tasksToExecute: p.tasksToExecute,
+		resultQueue:    p.resultQueue,
+		stopSignal:     p.stopSignal,
+		wg:             p.wg,
+	}
+	// add worker
+	p.workers = append(p.workers, w)
+	p.logger.WithName("initNewWorker").Info("created new worker", "ID", w.ID)
+	// start worker
+	w.start()
 }
 
 func (p *WorkerPool) Stop() {
 	logger := p.logger.WithName("Stop")
 
-	logger.Info("stop signal received")
 	close(p.stopSignal)
 
-	logger.Info("wait for all goroutines to close")
+	logger.Info("wait for all goroutines to close...", "workersCount", len(p.workers))
 	//TODO: use wg.Add() and wg.Done() in goroutines
 	p.wg.Wait()
 	logger.Info("all goroutines were closed")
