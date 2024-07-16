@@ -2,8 +2,9 @@ package worker_pool
 
 import (
 	"fmt"
-	stack "github.com/bogdanvlas2000/collections/stack"
 	"github.com/go-logr/logr"
+	"github.com/ngc4736/collections"
+	linkedlist "github.com/ngc4736/collections/linked-list"
 	"sync"
 )
 
@@ -19,7 +20,7 @@ type WorkerPool[T any] struct {
 	tasksToExecute chan Task[T]
 	resultQueue    chan T
 
-	waitingTasks stack.Stack[Task[T]]
+	waitingTasks collections.Dequeue[Task[T]]
 
 	maxWorkerCount int
 
@@ -38,6 +39,7 @@ func NewWorkerPool[T any](maxWorkersCount int, logger logr.Logger) *WorkerPool[T
 	return &WorkerPool[T]{
 		maxWorkerCount: maxWorkersCount,
 		logger:         logger,
+		waitingTasks:   linkedlist.New[Task[T]](),
 		wg:             &sync.WaitGroup{},
 		inputTasks:     make(chan Task[T]),
 		tasksToExecute: make(chan Task[T]),
@@ -60,7 +62,8 @@ func (p *WorkerPool[T]) Submit(task Task[T]) {
 func (p *WorkerPool[T]) processWaitingTasks() (ok bool) {
 	logger := p.logger.WithName("processWaitingTasks")
 
-	waitingTask, ok := p.waitingTasks.Peek()
+	//TODO: get element from head
+	waitingTask, ok := p.waitingTasks.First()
 
 	if !ok {
 		logger.Info("waitingTasks is empty")
@@ -79,7 +82,7 @@ func (p *WorkerPool[T]) processWaitingTasks() (ok bool) {
 		p.waitingTasks.Push(inputTask)
 	case p.tasksToExecute <- waitingTask:
 		logger.Info("sent waiting task to tasksToExecute", "task", waitingTask.String())
-		p.waitingTasks.Pop()
+		p.waitingTasks.PullFirst()
 	}
 
 	return true

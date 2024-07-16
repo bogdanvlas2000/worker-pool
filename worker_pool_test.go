@@ -3,6 +3,7 @@ package worker_pool
 import (
 	"fmt"
 	"github.com/go-logr/zapr"
+	"go.uber.org/goleak"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"os"
@@ -25,14 +26,16 @@ func (t testTask) Execute() string {
 }
 
 func TestWorkerPool_TaskExecution(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
 	tests := []struct {
 		taskCount      int
 		maxWorkerCount int
 	}{
 		{
 			//TODO: livelock with this test input (3, 1)
-			taskCount:      10,
-			maxWorkerCount: 3,
+			taskCount:      100,
+			maxWorkerCount: 50,
 		},
 		//{
 		//	taskCount:      5,

@@ -1,15 +1,11 @@
-github.com/bogdanvlas2000/collections v0.0.0-20240715124250-2dcdb3f3b862 h1:Zf5yc0+PDBA57xv/QveJJuKecyBtVHROEL1oM6VEkMk=
-github.com/bogdanvlas2000/collections v0.0.0-20240715124250-2dcdb3f3b862/go.mod h1:kZcWn0G7SIXSGtFV75aEiNHN34hqpVSlCG/YKbu6eMw=
-github.com/bogdanvlas2000/collections v0.0.0-20240715144432-36c2b994a51d h1:hJ+MO3XOk2BsQwFpepYqOtN02P02Gn/OjrjWdSg0XLM=
-github.com/bogdanvlas2000/collections v0.0.0-20240715144432-36c2b994a51d/go.mod h1:kZcWn0G7SIXSGtFV75aEiNHN34hqpVSlCG/YKbu6eMw=
-github.com/bogdanvlas2000/collections v0.0.0-20240715160321-dd210f858644 h1:TK4MuvSTGJ+R5u1X/1NLWMtwYkzSSunc20H9hjXWsKI=
-github.com/bogdanvlas2000/collections v0.0.0-20240715160321-dd210f858644/go.mod h1:kZcWn0G7SIXSGtFV75aEiNHN34hqpVSlCG/YKbu6eMw=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/go-logr/logr v1.4.2 h1:6pFjapn8bFcIbiKo3XT4j/BhANplGihG6tvd+8rYgrY=
 github.com/go-logr/logr v1.4.2/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
 github.com/go-logr/zapr v1.3.0 h1:XGdV8XW8zdwFiwOA2Dryh1gj2KRQyOOoNmBy4EplIcQ=
 github.com/go-logr/zapr v1.3.0/go.mod h1:YKepepNBd1u/oyhd/yQmtjVXmm9uML4IXUgMOwR8/Gg=
+github.com/ngc4736/collections v0.0.0-20240716212233-a0a18632db57 h1:J+eRHFfW8l18tbZrMnOSqCHW0TI+0/joUplxwC8H/ys=
+github.com/ngc4736/collections v0.0.0-20240716212233-a0a18632db57/go.mod h1:fY45EYqzU9TygG5iVr3DZKWmqnYhEcXTKSTBrHHfrbw=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
