@@ -8,11 +8,6 @@ import (
 	"sync"
 )
 
-type Task[T any] interface {
-	Execute() T
-	String() string
-}
-
 type WorkerPool[T any] struct {
 	wg *sync.WaitGroup
 
@@ -48,7 +43,7 @@ func NewWorkerPool[T any](maxWorkersCount int, logger logr.Logger) *WorkerPool[T
 	}
 }
 
-func (p *WorkerPool[T]) Start() <-chan T {
+func (p *WorkerPool[T]) Start() (results <-chan T) {
 	p.dispatch()
 	return p.resultQueue
 }

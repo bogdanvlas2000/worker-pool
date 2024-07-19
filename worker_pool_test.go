@@ -11,18 +11,15 @@ import (
 	"time"
 )
 
-type testTask struct {
-	id    int
-	delay time.Duration
+type ExecutableTask[T any] interface {
+	Execute() T
+	String() string
 }
 
-func (t testTask) String() string {
-	return fmt.Sprintf("task-%d", t.id)
-}
-
-func (t testTask) Execute() string {
-	time.Sleep(t.delay)
-	return fmt.Sprintf("result of task-%d", t.id)
+type Pool[T any] interface {
+	Start() <-chan T
+	Submit(t ExecutableTask[T])
+	Stop()
 }
 
 func TestWorkerPool_TaskExecution(t *testing.T) {
@@ -67,18 +64,18 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 
 	testLogger := logger.WithName("test")
 
-	for i, test := range tests {
-		poolName := fmt.Sprintf("pool-%d", i)
+	for testCount, test := range tests {
+		poolName := fmt.Sprintf("pool-%d", testCount)
 		wp := NewWorkerPool[string](test.maxWorkerCount, logger.WithName(poolName))
 
 		timer := getTimer()
 		results := wp.Start()
 
 		for i := 1; i <= test.taskCount; i++ {
-			task := testTask{
-				id:    i,
-				delay: time.Second,
-			}
+			task := NewTask[string](i, func() string {
+				time.Sleep(time.Second)
+				return fmt.Sprintf("result of task-%d", i)
+			})
 			testLogger.Info("submit task", "taskId", task)
 			wp.Submit(task)
 		}
