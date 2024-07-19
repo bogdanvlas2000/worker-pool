@@ -153,6 +153,8 @@ func (p *WorkerPool[T]) dispatch() {
 }
 
 func (p *WorkerPool[T]) worker(id int) {
+	//TODO: after worker completes task, mark it as idle
+	// idle worker should wait for a task some time, and then timeout
 	p.wg.Add(1)
 	logger := p.logger.WithName(fmt.Sprintf("worker-%d", id))
 
@@ -198,6 +200,9 @@ func (p *WorkerPool[T]) worker(id int) {
 }
 
 func (p *WorkerPool[T]) Stop() {
+	//TODO: implement graceful shutdown logic:
+	// wait for workers to complete tasks in progress (with some timeout)
+	// waiting tasks should be returned
 	logger := p.logger.WithName("Stop")
 
 	close(p.stopSignal)
