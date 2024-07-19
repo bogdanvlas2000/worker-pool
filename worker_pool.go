@@ -177,7 +177,12 @@ func (p *WorkerPool[T]) worker(id int) {
 			}
 
 			logger.Info("executing task...", "task", task.String())
-			result := task.Execute()
+			result, err := task.Execute()
+			if err != nil {
+				//TODO: process error returned from task
+				logger.Error(err, "task failed with an error", "task", task.String())
+				continue
+			}
 			logger.Info("completed task", "task", task.String())
 
 			logger.Info("attempting to send result", "task", task.String(), "result", result)

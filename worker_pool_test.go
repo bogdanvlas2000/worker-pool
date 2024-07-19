@@ -72,9 +72,9 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 		results := wp.Start()
 
 		for i := 1; i <= test.taskCount; i++ {
-			task := NewTask[string](i, func() string {
+			task := NewTask[string](i, func() (string, error) {
 				time.Sleep(time.Second)
-				return fmt.Sprintf("result of task-%d", i)
+				return fmt.Sprintf("result of task-%d", i), nil
 			})
 			testLogger.Info("submit task", "taskId", task)
 			wp.Submit(task)
