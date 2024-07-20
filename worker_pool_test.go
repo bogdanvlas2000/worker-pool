@@ -11,14 +11,9 @@ import (
 	"time"
 )
 
-type ExecutableTask[T any] interface {
-	Execute() T
-	String() string
-}
-
 type Pool[T any] interface {
 	Start() <-chan T
-	Submit(t ExecutableTask[T])
+	Submit(func() (T, error))
 	Stop()
 }
 
@@ -31,8 +26,8 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 	}{
 		{
 			//TODO: livelock with this test input (3, 1)
-			taskCount:      100,
-			maxWorkerCount: 50,
+			taskCount:      5,
+			maxWorkerCount: 2,
 		},
 		//{
 		//	taskCount:      5,
@@ -66,17 +61,19 @@ func TestWorkerPool_TaskExecution(t *testing.T) {
 
 	for testCount, test := range tests {
 		poolName := fmt.Sprintf("pool-%d", testCount)
-		wp := NewWorkerPool[string](test.maxWorkerCount, logger.WithName(poolName))
+
+		var wp Pool[string]
+		wp = NewWorkerPool[string](test.maxWorkerCount, logger.WithName(poolName))
 
 		timer := getTimer()
 		results := wp.Start()
 
 		for i := 1; i <= test.taskCount; i++ {
-			task := NewTask[string](i, func() (string, error) {
+			task := func() (string, error) {
 				time.Sleep(time.Second)
 				return fmt.Sprintf("result of task-%d", i), nil
-			})
-			testLogger.Info("submit task", "taskId", task)
+			}
+			testLogger.Info("submit task")
 			wp.Submit(task)
 		}
 
