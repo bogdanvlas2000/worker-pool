@@ -16,6 +16,7 @@ type WorkerPool[T any] struct {
 	inputTasks     chan taskFunc[T]
 	tasksToExecute chan taskFunc[T]
 	resultQueue    chan T
+	errorQueue     chan error
 
 	waitingTasks collections.Dequeue[taskFunc[T]]
 
@@ -41,13 +42,14 @@ func NewWorkerPool[T any](maxWorkersCount int, logger logr.Logger) *WorkerPool[T
 		inputTasks:     make(chan taskFunc[T]),
 		tasksToExecute: make(chan taskFunc[T]),
 		resultQueue:    make(chan T),
+		errorQueue:     make(chan error),
 		stopSignal:     make(chan struct{}),
 	}
 }
 
-func (p *WorkerPool[T]) Start() (results <-chan T) {
+func (p *WorkerPool[T]) Start() (results <-chan T, errors <-chan error) {
 	p.dispatch()
-	return p.resultQueue
+	return p.resultQueue, p.errorQueue
 }
 
 func (p *WorkerPool[T]) Submit(task func() (T, error)) {
@@ -182,7 +184,8 @@ func (p *WorkerPool[T]) worker(id int) {
 			result, err := task()
 			if err != nil {
 				//TODO: process error returned from task
-				logger.Error(err, "task failed with an error")
+				logger.Error(err, "task failed")
+				p.errorQueue <- err
 				continue
 			}
 			logger.Info("completed task")
