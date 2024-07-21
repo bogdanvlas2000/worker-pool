@@ -27,7 +27,7 @@ type WorkerPool[T any] struct {
 	logger logr.Logger
 }
 
-func NewWorkerPool[T any](maxWorkersCount int, logger logr.Logger) *WorkerPool[T] {
+func New[T any](maxWorkersCount int, logger logr.Logger) *WorkerPool[T] {
 	if maxWorkersCount < 1 {
 		maxWorkersCount = 1
 	}

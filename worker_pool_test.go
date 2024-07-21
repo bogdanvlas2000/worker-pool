@@ -69,7 +69,7 @@ func TestWorkerPool_Succeed(t *testing.T) {
 		poolName := fmt.Sprintf("pool-%d", testCount)
 
 		var wp Pool[string]
-		wp = NewWorkerPool[string](test.maxWorkerCount, getLogger(zapcore.InfoLevel).WithName(poolName))
+		wp = New[string](test.maxWorkerCount, getLogger(zapcore.InfoLevel).WithName(poolName))
 
 		timer := getTimer()
 		results, _ := wp.Start()
@@ -121,7 +121,7 @@ func TestWorkerPool_SucceedOrError(t *testing.T) {
 		poolName := fmt.Sprintf("pool-%d", testCount)
 
 		var wp Pool[string]
-		wp = NewWorkerPool[string](test.maxWorkerCount, getLogger(zapcore.ErrorLevel).WithName("pool"))
+		wp = New[string](test.maxWorkerCount, getLogger(zapcore.ErrorLevel).WithName("pool"))
 
 		timer := getTimer()
 		results, errors := wp.Start()
