@@ -110,9 +110,8 @@ func TestWorkerPool_SucceedOrError(t *testing.T) {
 		maxWorkerCount int
 	}{
 		{
-			//TODO: livelock with this test input (3, 1)
-			taskCount:      5,
-			maxWorkerCount: 1,
+			taskCount:      20,
+			maxWorkerCount: 10,
 		},
 	}
 
