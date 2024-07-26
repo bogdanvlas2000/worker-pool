@@ -1,9 +1,11 @@
 package workerpool
 
 import (
+	"fmt"
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/goleak"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"os"
@@ -64,19 +66,59 @@ func TestWorkerPool_New(t *testing.T) {
 	}
 }
 
-//func TestWorkerPool_worker(t *testing.T) {
-//	wp := WorkerPool[string]{
-//		wg:             &sync.WaitGroup{},
-//		inputTasks:     make(chan task[string]),
-//		tasksToExecute: make(chan task[string]),
-//		resultQueue:    make(chan string),
-//		errorQueue:     make(chan error),
-//		stopSignal:     make(chan struct{}),
-//	}
-//
-//	workerId := 0
-//	wp.worker(workerId)
-//}
+func TestWorkerPool_worker_single_task(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	l := getTestLogger(zapcore.InfoLevel).WithName("test")
+
+	testResult := "test result"
+	testErr := fmt.Errorf("test err")
+
+	tests := map[string]struct {
+		task           func() (string, error)
+		expectedResult string
+		expectedError  error
+	}{
+		"should return result": {
+			task: func() (string, error) {
+				return testResult, nil
+			},
+			expectedResult: testResult,
+			expectedError:  nil,
+		},
+		"should return error": {
+			task: func() (string, error) {
+				return "", testErr
+			},
+			expectedResult: "",
+			expectedError:  testErr,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			wp := New[string]()
+
+			wp.worker(0)
+
+			wp.tasksToExecute <- test.task
+
+			var result string
+			var err error
+			select {
+			case result = <-wp.resultQueue:
+				l.Info("result received", "result", result)
+			case err = <-wp.errorQueue:
+				l.Error(err, "error received")
+			}
+
+			assert.Equal(t, test.expectedResult, result)
+			assert.Equal(t, test.expectedError, err)
+
+			close(wp.stopSignal)
+		})
+	}
+}
 
 //func TestWorkerPool_Succeed(t *testing.T) {
 //	defer goleak.VerifyNone(t)
