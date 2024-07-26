@@ -3,48 +3,94 @@ package workerpool
 import (
 	"fmt"
 	"github.com/go-logr/logr"
+	"github.com/go-logr/zapr"
 	"github.com/ngc4736/collections"
 	"github.com/ngc4736/collections/linkedlist"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"os"
 	"sync"
+	"sync/atomic"
 )
 
-type taskFunc[T any] func() (T, error)
+const DefaultMaxWorkersCount = 100
+
+type task[T any] func() (T, error)
+type Opt[T any] func(*WorkerPool[T])
 
 type WorkerPool[T any] struct {
 	wg *sync.WaitGroup
 
-	inputTasks     chan taskFunc[T]
-	tasksToExecute chan taskFunc[T]
+	inputTasks     chan task[T]
+	tasksToExecute chan task[T]
 	resultQueue    chan T
 	errorQueue     chan error
 
-	waitingTasks collections.Dequeue[taskFunc[T]]
+	waitingTasks collections.Dequeue[task[T]]
 
-	maxWorkerCount int
+	workerCount    atomic.Uint32
+	maxWorkerCount uint32
 
 	stopSignal chan struct{}
 
 	logger logr.Logger
 }
 
-func New[T any](maxWorkersCount int, logger logr.Logger) *WorkerPool[T] {
-	if maxWorkersCount < 1 {
-		maxWorkersCount = 1
-	}
+func New[T any](opts ...Opt[T]) *WorkerPool[T] {
 
-	logger.Info("create worker pool", "maxWorkerCount", maxWorkersCount)
-
-	return &WorkerPool[T]{
-		maxWorkerCount: maxWorkersCount,
-		logger:         logger,
-		waitingTasks:   linkedlist.New[taskFunc[T]](),
+	wp := &WorkerPool[T]{
+		maxWorkerCount: DefaultMaxWorkersCount,
+		logger:         defaultLogger(),
+		workerCount:    atomic.Uint32{},
 		wg:             &sync.WaitGroup{},
-		inputTasks:     make(chan taskFunc[T]),
-		tasksToExecute: make(chan taskFunc[T]),
+		waitingTasks:   linkedlist.New[task[T]](),
+		inputTasks:     make(chan task[T]),
+		tasksToExecute: make(chan task[T]),
 		resultQueue:    make(chan T),
 		errorQueue:     make(chan error),
 		stopSignal:     make(chan struct{}),
 	}
+
+	for _, o := range opts {
+		o(wp)
+	}
+
+	wp.logger.Info("created worker pool", "maxWorkerCount", wp.maxWorkerCount)
+	return wp
+}
+
+func defaultLogger() logr.Logger {
+	core := zapcore.NewCore(
+		zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()),
+		zapcore.Lock(os.Stdout),
+		zap.LevelEnablerFunc(func(level zapcore.Level) bool {
+			return level == zapcore.FatalLevel
+		}),
+	)
+	silentLogger := zap.New(core)
+	defer silentLogger.Sync()
+
+	return zapr.NewLogger(silentLogger)
+}
+
+func WithMaxWorkerCount[T any](maxWorkerCount uint32) func(pool *WorkerPool[T]) {
+	return func(wp *WorkerPool[T]) {
+		wp.maxWorkerCount = maxWorkerCount
+	}
+}
+
+func WithLogger[T any](logger logr.Logger) func(pool *WorkerPool[T]) {
+	return func(wp *WorkerPool[T]) {
+		wp.logger = logger
+	}
+}
+
+func (p *WorkerPool[T]) MaxWorkerCount() uint32 {
+	return p.maxWorkerCount
+}
+
+func (p *WorkerPool[T]) Logger() logr.Logger {
+	return p.logger
 }
 
 func (p *WorkerPool[T]) Start() (results <-chan T, errors <-chan error) {
@@ -61,7 +107,6 @@ func (p *WorkerPool[T]) Submit(task func() (T, error)) {
 func (p *WorkerPool[T]) processWaitingTasks() (ok bool) {
 	logger := p.logger.WithName("processWaitingTasks")
 
-	//TODO: get element from head
 	waitingTask, ok := p.waitingTasks.First()
 
 	if !ok {
@@ -69,7 +114,7 @@ func (p *WorkerPool[T]) processWaitingTasks() (ok bool) {
 		return true
 	}
 
-	var inputTask taskFunc[T]
+	var inputTask task[T]
 
 	select {
 	case inputTask, ok = <-p.inputTasks:
@@ -94,10 +139,7 @@ func (p *WorkerPool[T]) dispatch() {
 	logger := p.logger.WithName("dispatch")
 
 	go func() {
-		//var workerCount int
 		defer p.wg.Done()
-
-		workersCount := 0
 
 	Loop:
 		for {
@@ -108,7 +150,7 @@ func (p *WorkerPool[T]) dispatch() {
 				continue
 			}
 
-			var inputTask taskFunc[T]
+			var inputTask task[T]
 			var ok bool
 
 			logger.Info("attempting to receive input task...")
@@ -133,16 +175,16 @@ func (p *WorkerPool[T]) dispatch() {
 			logger.Info("input task received")
 
 			// if workerCount < maxWorkerCount init a new worker
-			if workersCount < p.maxWorkerCount {
-				logger.Info("workers limit not reached yet", "workersCount", workersCount)
+			if p.workerCount.Load() < p.maxWorkerCount {
+				logger.Info("workers limit not reached yet", "workerCount", p.workerCount.Load())
 
-				p.worker(workersCount)
-				workersCount++
+				p.worker(p.workerCount.Load())
+				p.workerCount.Add(1)
 
 				logger.Info("attempting to send task to tasksToExecute...")
 				p.tasksToExecute <- inputTask
 			} else {
-				logger.Info("workers limit reached", "workersCount", workersCount)
+				logger.Info("workers limit reached", "workerCount", p.workerCount.Load())
 				logger.Info("push input task to waitingTasks")
 				p.waitingTasks.Push(inputTask)
 			}
@@ -151,7 +193,7 @@ func (p *WorkerPool[T]) dispatch() {
 	}()
 }
 
-func (p *WorkerPool[T]) worker(id int) {
+func (p *WorkerPool[T]) worker(id uint32) {
 	//TODO: after worker completes task, mark it as idle
 	// idle worker should wait for a task some time, and then timeout
 	p.wg.Add(1)
@@ -164,7 +206,7 @@ func (p *WorkerPool[T]) worker(id int) {
 
 	Loop:
 		for {
-			var task taskFunc[T]
+			var task task[T]
 			var ok bool
 
 			logger.Info("attempting to receive task")
