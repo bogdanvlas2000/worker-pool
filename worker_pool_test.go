@@ -10,15 +10,10 @@ import (
 	"go.uber.org/zap/zapcore"
 	"os"
 	"testing"
+	"time"
 )
 
-type TestPool[T any] interface {
-	Start() (<-chan T, <-chan error)
-	Submit(func() (T, error))
-	Stop()
-}
-
-func getTestLogger(level zapcore.Level) logr.Logger {
+func getTestLogger(l zapcore.Level) logr.Logger {
 	encoderCfg := zap.NewDevelopmentEncoderConfig()
 	encoderCfg.TimeKey = ""
 	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
@@ -27,49 +22,57 @@ func getTestLogger(level zapcore.Level) logr.Logger {
 		zapcore.NewConsoleEncoder(encoderCfg),
 		zapcore.Lock(os.Stdout),
 		zap.LevelEnablerFunc(func(level zapcore.Level) bool {
-			return level == level
+			return level == l
 		}),
 	)
 
 	zapLogger := zap.New(core)
 	defer zapLogger.Sync()
 
-	return zapr.NewLogger(zapLogger)
+	return zapr.NewLogger(zapLogger).V(int(l))
 }
 
-func TestWorkerPool_New(t *testing.T) {
+func Test_New(t *testing.T) {
 	tests := map[string]struct {
-		opts                    []Opt[string]
-		expectedMaxWorkerCount  uint32
-		expectedLoggerVerbosity int
+		opts                      []Opt[string]
+		expectedMaxWorkerCount    uint32
+		expectedMinWorkerCount    uint32
+		expectedLoggerVerbosity   int
+		expectedIdleWorkerTimeout time.Duration
+		expectedError             error
 	}{
 		"should create worker pool with default params": {
-			opts:                    []Opt[string]{},
-			expectedMaxWorkerCount:  DefaultMaxWorkersCount,
-			expectedLoggerVerbosity: defaultLogger().GetV(),
+			opts:                      []Opt[string]{},
+			expectedLoggerVerbosity:   defaultLogger().GetV(),
+			expectedMaxWorkerCount:    DefaultMaxWorkersCount,
+			expectedIdleWorkerTimeout: DefaultIdleWorkerTimeout,
+			expectedError:             nil,
 		},
 		"should create worker pool with custom params": {
 			opts: []Opt[string]{
+				WithLogger[string](getTestLogger(zapcore.ErrorLevel)),
 				WithMaxWorkerCount[string](5),
-				WithLogger[string](getTestLogger(zapcore.InfoLevel)),
+				WithIdleWorkerTimeout[string](time.Second),
 			},
-			expectedMaxWorkerCount:  5,
-			expectedLoggerVerbosity: getTestLogger(zapcore.InfoLevel).GetV(),
+			expectedLoggerVerbosity:   getTestLogger(zapcore.ErrorLevel).GetV(),
+			expectedMaxWorkerCount:    5,
+			expectedMinWorkerCount:    2,
+			expectedIdleWorkerTimeout: time.Second,
+			expectedError:             nil,
 		},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
 			wp := New[string](test.opts...)
-			assert.Equal(t, test.expectedMaxWorkerCount, wp.MaxWorkerCount())
 			assert.Equal(t, test.expectedLoggerVerbosity, wp.Logger().GetV())
+			assert.Equal(t, test.expectedMaxWorkerCount, wp.MaxWorkerCount())
+			assert.Equal(t, test.expectedIdleWorkerTimeout, wp.idleWorkerTimeout)
 		})
 	}
 }
 
-func TestWorkerPool_worker_single_task(t *testing.T) {
+func Test_worker(t *testing.T) {
 	defer goleak.VerifyNone(t)
-
-	l := getTestLogger(zapcore.InfoLevel).WithName("test")
 
 	testResult := "test result"
 	testErr := fmt.Errorf("test err")
@@ -106,10 +109,8 @@ func TestWorkerPool_worker_single_task(t *testing.T) {
 			var result string
 			var err error
 			select {
-			case result = <-wp.resultQueue:
-				l.Info("result received", "result", result)
-			case err = <-wp.errorQueue:
-				l.Error(err, "error received")
+			case result = <-wp.results:
+			case err = <-wp.errors:
 			}
 
 			assert.Equal(t, test.expectedResult, result)
@@ -120,58 +121,97 @@ func TestWorkerPool_worker_single_task(t *testing.T) {
 	}
 }
 
-//func TestWorkerPool_Succeed(t *testing.T) {
-//	defer goleak.VerifyNone(t)
-//
-//	tests := []struct {
-//		taskCount      int
-//		maxWorkerCount int
-//	}{
-//		{
-//			taskCount:      5,
-//			maxWorkerCount: 2,
-//		},
-//	}
-//
-//	testLogger := getTestLogger(zapcore.InfoLevel).WithName("test")
-//
-//	for testCount, test := range tests {
-//		poolName := fmt.Sprintf("pool-%d", testCount)
-//
-//		var wp TestPool[string]
-//		wp = New[string](test.maxWorkerCount, getTestLogger(zapcore.InfoLevel).WithName(poolName))
-//
-//		timer := getTimer()
-//		results, _ := wp.Start()
-//
-//		for i := 1; i <= test.taskCount; i++ {
-//			task := func() (string, error) {
-//				time.Sleep(time.Second)
-//				return fmt.Sprintf("result of task-%d", i), nil
-//			}
-//			testLogger.Info("submit task")
-//			wp.Submit(task)
-//		}
-//
-//		for i := 0; i < test.taskCount; i++ {
-//			testLogger.Info("attempting to receive result...")
-//			result, ok := <-results
-//			if !ok {
-//				testLogger.Info("results chan is closed")
-//				break
-//			}
-//			testLogger.Info("result received", "result", result)
-//		}
-//
-//		testLogger.Info("stop worker pool")
-//		wp.Stop()
-//		duration := timer()
-//
-//		testLogger.Info("test completed", "workerPool", poolName, "duration", duration)
-//		fmt.Println()
-//	}
-//}
-//
+func Test_WorkerPool_IdleWorkerTimeout(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	tests := map[string]struct {
+		workerIdleTimeout   time.Duration
+		delay               time.Duration
+		expectedWorkerCount uint32
+	}{
+		"should wait": {
+			workerIdleTimeout:   time.Second * 2,
+			delay:               time.Second,
+			expectedWorkerCount: 1,
+		},
+		"should timeout": {
+			workerIdleTimeout:   time.Second,
+			delay:               time.Second * 2,
+			expectedWorkerCount: 0,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			wp := New[string](
+				WithIdleWorkerTimeout[string](test.workerIdleTimeout),
+			)
+			results, _ := wp.Start()
+
+			task := func() (string, error) { return "", nil }
+
+			wp.Submit(task)
+
+			<-results
+			<-time.After(test.delay)
+
+			workerCount := wp.WorkerCount()
+
+			assert.Equal(t, test.expectedWorkerCount, workerCount)
+			wp.Stop()
+		})
+	}
+}
+
+func Test_WorkerPool_MultipleTasks(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	tests := []struct {
+		taskCount      int
+		maxWorkerCount int
+	}{
+		{
+			taskCount:      20,
+			maxWorkerCount: 10,
+		},
+	}
+
+	testLogger := getTestLogger(zapcore.ErrorLevel).WithName("test")
+
+	for testCount, test := range tests {
+		poolName := fmt.Sprintf("pool-%d", testCount)
+
+		wp := New[string](WithLogger[string](getTestLogger(zap.ErrorLevel)))
+
+		results, _ := wp.Start()
+
+		for i := 1; i <= test.taskCount; i++ {
+			task := func() (string, error) {
+				time.Sleep(time.Second)
+				return fmt.Sprintf("result of task-%d", i), nil
+			}
+			testLogger.Info("submit task")
+			wp.Submit(task)
+		}
+
+		for i := 0; i < test.taskCount; i++ {
+			testLogger.Info("attempting to receive result...")
+			result, ok := <-results
+			if !ok {
+				testLogger.Info("results chan is closed")
+				break
+			}
+			testLogger.Info("result received", "result", result)
+		}
+
+		testLogger.Info("stop worker pool")
+		wp.Stop()
+
+		testLogger.Info("test completed", "workerPool", poolName)
+		fmt.Println()
+	}
+}
+
 //func TestWorkerPool_SucceedOrError(t *testing.T) {
 //	defer goleak.VerifyNone(t)
 //

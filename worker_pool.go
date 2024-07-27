@@ -4,34 +4,37 @@ import (
 	"fmt"
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
-	"github.com/ngc4736/collections"
 	"github.com/ngc4736/collections/linkedlist"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const DefaultMaxWorkersCount = 100
+const DefaultIdleWorkerTimeout = time.Second * 2
 
-type task[T any] func() (T, error)
+type taskFunc[T any] func() (T, error)
 type Opt[T any] func(*WorkerPool[T])
 
 type WorkerPool[T any] struct {
 	wg *sync.WaitGroup
 
-	inputTasks     chan task[T]
-	tasksToExecute chan task[T]
-	resultQueue    chan T
-	errorQueue     chan error
+	inputTasks     chan taskFunc[T]
+	tasksToExecute chan taskFunc[T]
+	results        chan T
+	errors         chan error
 
-	waitingTasks collections.Dequeue[task[T]]
+	waitingTasks Dequeue[taskFunc[T]]
 
 	workerCount    atomic.Uint32
 	maxWorkerCount uint32
 
 	stopSignal chan struct{}
+
+	idleWorkerTimeout time.Duration
 
 	logger logr.Logger
 }
@@ -39,23 +42,26 @@ type WorkerPool[T any] struct {
 func New[T any](opts ...Opt[T]) *WorkerPool[T] {
 
 	wp := &WorkerPool[T]{
-		maxWorkerCount: DefaultMaxWorkersCount,
-		logger:         defaultLogger(),
-		workerCount:    atomic.Uint32{},
-		wg:             &sync.WaitGroup{},
-		waitingTasks:   linkedlist.New[task[T]](),
-		inputTasks:     make(chan task[T]),
-		tasksToExecute: make(chan task[T]),
-		resultQueue:    make(chan T),
-		errorQueue:     make(chan error),
-		stopSignal:     make(chan struct{}),
+		logger:            defaultLogger(),
+		maxWorkerCount:    DefaultMaxWorkersCount,
+		idleWorkerTimeout: DefaultIdleWorkerTimeout,
+		workerCount:       atomic.Uint32{},
+		wg:                &sync.WaitGroup{},
+		waitingTasks:      linkedlist.New[taskFunc[T]](),
+		inputTasks:        make(chan taskFunc[T]),
+		tasksToExecute:    make(chan taskFunc[T]),
+		results:           make(chan T),
+		errors:            make(chan error),
+		stopSignal:        make(chan struct{}),
 	}
 
 	for _, o := range opts {
 		o(wp)
 	}
 
-	wp.logger.Info("created worker pool", "maxWorkerCount", wp.maxWorkerCount)
+	wp.logger.Info("created worker pool",
+		"maxWorkerCount", wp.maxWorkerCount)
+
 	return wp
 }
 
@@ -73,29 +79,43 @@ func defaultLogger() logr.Logger {
 	return zapr.NewLogger(silentLogger)
 }
 
-func WithMaxWorkerCount[T any](maxWorkerCount uint32) func(pool *WorkerPool[T]) {
-	return func(wp *WorkerPool[T]) {
-		wp.maxWorkerCount = maxWorkerCount
-	}
-}
-
 func WithLogger[T any](logger logr.Logger) func(pool *WorkerPool[T]) {
 	return func(wp *WorkerPool[T]) {
 		wp.logger = logger
 	}
 }
 
-func (p *WorkerPool[T]) MaxWorkerCount() uint32 {
-	return p.maxWorkerCount
+func WithMaxWorkerCount[T any](maxWorkerCount uint32) func(pool *WorkerPool[T]) {
+	return func(wp *WorkerPool[T]) {
+		wp.maxWorkerCount = maxWorkerCount
+	}
+}
+
+func WithIdleWorkerTimeout[T any](idleWorkerTimeout time.Duration) func(pool *WorkerPool[T]) {
+	return func(wp *WorkerPool[T]) {
+		wp.idleWorkerTimeout = idleWorkerTimeout
+	}
 }
 
 func (p *WorkerPool[T]) Logger() logr.Logger {
 	return p.logger
 }
 
+func (p *WorkerPool[T]) MaxWorkerCount() uint32 {
+	return p.maxWorkerCount
+}
+
+func (p *WorkerPool[T]) IdleWorkerTimeout() time.Duration {
+	return p.idleWorkerTimeout
+}
+
+func (p *WorkerPool[T]) WorkerCount() uint32 {
+	return p.workerCount.Load()
+}
+
 func (p *WorkerPool[T]) Start() (results <-chan T, errors <-chan error) {
 	p.dispatch()
-	return p.resultQueue, p.errorQueue
+	return p.results, p.errors
 }
 
 func (p *WorkerPool[T]) Submit(task func() (T, error)) {
@@ -114,7 +134,7 @@ func (p *WorkerPool[T]) processWaitingTasks() (ok bool) {
 		return true
 	}
 
-	var inputTask task[T]
+	var inputTask taskFunc[T]
 
 	select {
 	case inputTask, ok = <-p.inputTasks:
@@ -150,7 +170,7 @@ func (p *WorkerPool[T]) dispatch() {
 				continue
 			}
 
-			var inputTask task[T]
+			var inputTask taskFunc[T]
 			var ok bool
 
 			logger.Info("attempting to receive input task...")
@@ -176,7 +196,7 @@ func (p *WorkerPool[T]) dispatch() {
 
 			// if workerCount < maxWorkerCount init a new worker
 			if p.workerCount.Load() < p.maxWorkerCount {
-				logger.Info("workers limit not reached yet", "workerCount", p.workerCount.Load())
+				logger.Info("workers limit not reached yet")
 
 				p.worker(p.workerCount.Load())
 				p.workerCount.Add(1)
@@ -184,7 +204,7 @@ func (p *WorkerPool[T]) dispatch() {
 				logger.Info("attempting to send task to tasksToExecute...")
 				p.tasksToExecute <- inputTask
 			} else {
-				logger.Info("workers limit reached", "workerCount", p.workerCount.Load())
+				logger.Info("workers limit reached")
 				logger.Info("push input task to waitingTasks")
 				p.waitingTasks.Push(inputTask)
 			}
@@ -193,20 +213,23 @@ func (p *WorkerPool[T]) dispatch() {
 	}()
 }
 
+// TODO: extract worker to a separate struct
 func (p *WorkerPool[T]) worker(id uint32) {
 	//TODO: after worker completes task, mark it as idle
 	// idle worker should wait for a task some time, and then timeout
 	p.wg.Add(1)
-	logger := p.logger.WithName(fmt.Sprintf("worker-%d", id))
+	logger := p.logger.WithName(fmt.Sprintf("worker-%d", +id))
 
 	go func() {
 		defer p.wg.Done()
+		// decrement worker count
+		defer p.workerCount.Add(^uint32(0))
 
 		logger.Info("start")
 
 	Loop:
 		for {
-			var task task[T]
+			var task taskFunc[T]
 			var ok bool
 
 			logger.Info("attempting to receive task")
@@ -220,26 +243,22 @@ func (p *WorkerPool[T]) worker(id uint32) {
 			case <-p.stopSignal:
 				logger.Info("stop signal received")
 				break Loop
+			case <-time.After(p.idleWorkerTimeout):
+				logger.Info("idle worker timeout")
+				break Loop
 			}
 
 			logger.Info("executing task...")
 			result, err := task()
 			if err != nil {
-				//TODO: process error returned from task
 				logger.Error(err, "task failed")
-				p.errorQueue <- err
+				p.errors <- err
 				continue
 			}
 			logger.Info("completed task")
 
 			logger.Info("attempting to send result", "result", result)
-			select {
-			case p.resultQueue <- result:
-				logger.Info("result sent", "result", result)
-			case <-p.stopSignal:
-				logger.Info("stop signal received")
-				break
-			}
+			p.results <- result
 		}
 
 		logger.Info("stop")
