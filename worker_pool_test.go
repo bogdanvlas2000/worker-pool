@@ -67,12 +67,12 @@ func Test_New(t *testing.T) {
 			wp := New[string](test.opts...)
 			assert.Equal(t, test.expectedLoggerVerbosity, wp.Logger().GetV())
 			assert.Equal(t, test.expectedMaxWorkerCount, wp.MaxWorkerCount())
-			assert.Equal(t, test.expectedIdleWorkerTimeout, wp.idleWorkerTimeout)
+			assert.Equal(t, test.expectedIdleWorkerTimeout, wp.IdleWorkerTimeout())
 		})
 	}
 }
 
-func Test_worker(t *testing.T) {
+func Test_WorkerResult(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	testResult := "test result"
@@ -103,26 +103,25 @@ func Test_worker(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			wp := New[string]()
 
-			wp.worker(0)
-
-			wp.tasksToExecute <- test.task
+			wp.Start()
+			wp.Submit(test.task)
 
 			var result string
 			var err error
+
 			select {
 			case result = <-wp.results:
 			case err = <-wp.errors:
 			}
+			wp.Stop()
 
 			assert.Equal(t, test.expectedResult, result)
 			assert.Equal(t, test.expectedError, err)
-
-			close(wp.stopSignal)
 		})
 	}
 }
 
-func Test_WorkerPool_IdleWorkerTimeout(t *testing.T) {
+func Test_IdleWorkerTimeout(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	tests := map[string]struct {
@@ -164,7 +163,7 @@ func Test_WorkerPool_IdleWorkerTimeout(t *testing.T) {
 	}
 }
 
-func Test_WorkerPool_MultipleTasks(t *testing.T) {
+func Test_MultipleRandomTasks(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	tests := map[string]struct {
