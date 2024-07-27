@@ -8,6 +8,7 @@ import (
 	"go.uber.org/goleak"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"math/rand"
 	"os"
 	"testing"
 	"time"
@@ -166,49 +167,80 @@ func Test_WorkerPool_IdleWorkerTimeout(t *testing.T) {
 func Test_WorkerPool_MultipleTasks(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	tests := []struct {
+	tests := map[string]struct {
 		taskCount      int
-		maxWorkerCount int
+		maxWorkerCount uint32
 	}{
-		{
-			taskCount:      20,
+		"should succeed when task count is less than max worker count": {
+			taskCount:      5,
 			maxWorkerCount: 10,
+		},
+		"should succeed when task count equals max worker count": {
+			taskCount:      5,
+			maxWorkerCount: 5,
+		},
+		"should succeed when task count is greater than max worker count": {
+			taskCount:      10,
+			maxWorkerCount: 5,
 		},
 	}
 
 	testLogger := getTestLogger(zapcore.ErrorLevel).WithName("test")
 
-	for testCount, test := range tests {
-		poolName := fmt.Sprintf("pool-%d", testCount)
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			wp := New[string](
+				WithMaxWorkerCount[string](test.maxWorkerCount),
+			)
 
-		wp := New[string](WithLogger[string](getTestLogger(zap.ErrorLevel)))
+			resultChan, errorChan := wp.Start()
 
-		results, _ := wp.Start()
-
-		for i := 1; i <= test.taskCount; i++ {
-			task := func() (string, error) {
-				time.Sleep(time.Second)
-				return fmt.Sprintf("result of task-%d", i), nil
+			for i := 0; i < test.taskCount; i++ {
+				task := getTestTask(i)
+				testLogger.Info("submit task", "id", i)
+				wp.Submit(task)
 			}
-			testLogger.Info("submit task")
-			wp.Submit(task)
+
+			var results []string
+			var errors []error
+
+			for i := 0; i < test.taskCount; i++ {
+				select {
+				case result, ok := <-resultChan:
+					if !ok {
+						testLogger.Info("resultChan chan is closed")
+						break
+					}
+					testLogger.Info("result received", "result", result)
+					results = append(results, result)
+				case err, ok := <-errorChan:
+					if !ok {
+						testLogger.Info("errorChan chan is closed")
+						break
+					}
+					testLogger.Info("error received", "err", err)
+					errors = append(errors, err)
+				}
+			}
+
+			testLogger.Info("stop worker pool", "taskCount", test.taskCount, "resultsCount", len(results), "errorsCount", len(errors))
+			wp.Stop()
+
+			assert.Equal(t, test.taskCount, len(results)+len(errors))
+		})
+	}
+}
+
+func getTestTask(id int) taskFunc[string] {
+	return func() (string, error) {
+		time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+		correct := (rand.Intn(10) % 2) == 0
+
+		if !correct {
+			return "", fmt.Errorf("failed task-%d", id)
 		}
 
-		for i := 0; i < test.taskCount; i++ {
-			testLogger.Info("attempting to receive result...")
-			result, ok := <-results
-			if !ok {
-				testLogger.Info("results chan is closed")
-				break
-			}
-			testLogger.Info("result received", "result", result)
-		}
-
-		testLogger.Info("stop worker pool")
-		wp.Stop()
-
-		testLogger.Info("test completed", "workerPool", poolName)
-		fmt.Println()
+		return fmt.Sprintf("result of task-%d", id), nil
 	}
 }
 
@@ -234,40 +266,7 @@ func Test_WorkerPool_MultipleTasks(t *testing.T) {
 //		wp = New[string](test.maxWorkerCount, getTestLogger(zapcore.ErrorLevel).WithName("pool"))
 //
 //		timer := getTimer()
-//		results, errors := wp.Start()
-//
-//		for i := 1; i <= test.taskCount; i++ {
-//			task := func() (string, error) {
-//				time.Sleep(time.Second)
-//
-//				correct := (rand.Intn(10) % 2) == 0
-//
-//				if !correct {
-//					return "", fmt.Errorf("failed task-%d", i)
-//				}
-//
-//				return fmt.Sprintf("result of task-%d", i), nil
-//			}
-//			testLogger.Info("submit task", "id", i)
-//			wp.Submit(task)
-//		}
-//
-//		for i := 0; i < test.taskCount; i++ {
-//			select {
-//			case result, ok := <-results:
-//				if !ok {
-//					testLogger.Info("results chan is closed")
-//					break
-//				}
-//				testLogger.Info("result received", "result", result)
-//			case err, ok := <-errors:
-//				if !ok {
-//					testLogger.Info("errors chan is closed")
-//					break
-//				}
-//				testLogger.Info("error received", "err", err)
-//			}
-//		}
+//results, error
 //
 //		testLogger.Info("stop worker pool")
 //		wp.Stop()
